@@ -16,25 +16,25 @@ This skill distills those principles into actionable guidance. It is not a repro
 
 ## Installation
 
-### Per-project (recommended)
+### Using skill-installer (recommended)
 
-Clone into your project's `.agents/skills/` directory:
+In Codex, type:
 
-```bash
-mkdir -p .agents/skills
-git clone https://github.com/MKToronto/python-clean-architecture-codex.git .agents/skills/python-clean-architecture
+```
+$skill-installer install https://github.com/MKToronto/python-clean-architecture-codex
 ```
 
-Codex will automatically discover the skill from `.agents/skills/`.
+Then restart Codex.
 
-### User-wide
+### Manual install
 
-Install to your home directory so the skill is available in all projects:
+Clone to your home skills directory so the skill is available in all projects:
 
 ```bash
-mkdir -p ~/.agents/skills
 git clone https://github.com/MKToronto/python-clean-architecture-codex.git ~/.agents/skills/python-clean-architecture
 ```
+
+Or clone into a specific project's `.agents/skills/` directory for per-project use.
 
 ### Verify installation
 
