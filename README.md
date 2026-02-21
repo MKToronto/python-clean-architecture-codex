@@ -16,45 +16,48 @@ This skill distills those principles into actionable guidance. It is not a repro
 
 ## Installation
 
-### Using skill-installer (recommended)
-
 In Codex, type:
 
 ```
 $skill-installer install https://github.com/MKToronto/python-clean-architecture-codex
 ```
 
-Then restart Codex.
+Codex will ask you to approve a few steps — say yes each time. Once it finishes, restart Codex to pick up the skill.
 
-### Manual install
-
-Clone to your home skills directory so the skill is available in all projects:
-
-```bash
-git clone https://github.com/MKToronto/python-clean-architecture-codex.git ~/.agents/skills/python-clean-architecture
-```
-
-Or clone into a specific project's `.agents/skills/` directory for per-project use.
-
-### Verify installation
-
-Start Codex and ask:
-
-```
-review my code structure
-```
-
-or
-
-```
-scaffold a FastAPI project
-```
-
-The skill should trigger automatically.
+The skill installs to `~/.codex/skills/clean-architecture`.
 
 ## Usage
 
-The skill triggers automatically when you mention clean architecture, FastAPI scaffolding, code quality, design patterns, or related topics.
+There are no slash commands. You talk to Codex naturally and the skill triggers automatically, or you can invoke it explicitly with `$python-clean-architecture`.
+
+### Explicit invocation
+
+Prefix your request with the skill name:
+
+```
+$python-clean-architecture review architecture of src/
+$python-clean-architecture check quality of my code
+$python-clean-architecture suggest patterns for src/services/
+$python-clean-architecture decouple src/
+$python-clean-architecture make src/services/payment.py pythonic
+$python-clean-architecture extract god classes in src/
+$python-clean-architecture scaffold a FastAPI project called hotel-api
+$python-clean-architecture add an endpoint for bookings
+```
+
+### Natural language (no $ needed)
+
+The skill also triggers automatically when your prompt matches. Just ask:
+
+```
+review my code structure
+scaffold a new FastAPI project
+refactor to clean architecture
+add a new endpoint for orders
+check my code quality
+suggest design patterns for this code
+decouple my services
+```
 
 ### Available Workflows
 
@@ -71,19 +74,6 @@ The skill triggers automatically when you mention clean architecture, FastAPI sc
 **Scaffolding:**
 - **Scaffold API** — Generate a new FastAPI project with clean architecture
 - **Add Endpoint** — Scaffold a new endpoint across all three layers
-
-### Example prompts
-
-```
-review architecture of src/
-check quality of my code
-suggest patterns for src/services/
-decouple src/
-make src/services/payment.py pythonic
-extract god classes in src/
-scaffold a FastAPI project called hotel-api
-add an endpoint for bookings
-```
 
 ## What's Inside
 
