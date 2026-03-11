@@ -629,6 +629,9 @@ For detailed guidance beyond this overview, consult:
 - **`references/project-organization.md`** — Modules, packages, imports, folder structure, avoid "utils" anti-pattern
 - **`references/context-managers.md`** — Context manager protocol, `__enter__`/`__exit__`, `@contextmanager`, `ExitStack`, async context managers
 - **`references/decorators.md`** — Decorator patterns: retry with backoff, logging, timing, `functools.wraps`, parameterized decorators
+- **`references/async-patterns.md`** — Async/await for FastAPI: coroutines, `asyncio.gather`, `TaskGroup`, async context managers, async generators, async DataInterface
+- **`references/pydantic-validation.md`** — Pydantic v2 validators: `@field_validator`, `@model_validator`, `Field()` constraints, `ConfigDict`, serializers, special types
+- **`references/pattern-matching.md`** — Structural pattern matching (`match`/`case`): literal, capture, OR, sequence, class, mapping patterns, guard clauses
 
 **Pythonic Patterns:**
 - **`references/pythonic-patterns.md`** — Quick reference lookup table for all 10 patterns (use for reviews and pattern selection)
