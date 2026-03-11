@@ -62,7 +62,7 @@ decouple my services
 ### Available Workflows
 
 **Review & Analysis:**
-- **Review Architecture** — Full architecture review (standard or in-depth) against the 7 design principles, 22 quality rules, and Pythonic patterns
+- **Review Architecture** — Full architecture review (standard or in-depth) against the 7 design principles, 22 quality rules, and all 25 Pythonic patterns
 - **Check Quality** — Quick check against 22 code quality rules
 - **Suggest Patterns** — Recommend Pythonic design patterns for your code
 - **Decouple** — Find tight coupling and suggest dependency injection improvements
