@@ -1,13 +1,14 @@
 ---
 name: python-clean-architecture
 description: This skill should be used when the user asks to "scaffold a FastAPI project", "set up clean architecture", "refactor to clean architecture", "add a new endpoint", "add a router", "add a use case", "add a repository", "review my code structure", "review architecture", "check code quality", "apply design patterns in Python", "decouple my code", "improve code quality", "make my code testable", "make pythonic", "extract god class", or mentions layered architecture, dependency injection, Protocol-based design, or Pythonic design patterns for Python/FastAPI projects.
+version: 0.8.1
 ---
 
 # Python Clean Architecture
 
 Provide Clean Architecture guidance for Python projects, specifically FastAPI APIs. Based on seven core design principles, Pythonic implementations of classic patterns, and a three-layer architecture (Routers → Operations → Database).
 
-> **Attribution:** The principles, patterns, and architectural approach in this skill are inspired by and synthesized from [Arjan Codes](https://www.arjancodes.com/)' courses: *The Software Designer Mindset*, *Pythonic Patterns*, and *Complete Extension*. The specific Pythonic framing (Protocol-based DI, functional pattern progression, three-layer FastAPI architecture) originates from his teaching. This skill distills those principles into actionable guidance — it is not a reproduction of course content.
+> **Attribution:** The principles, patterns, and architectural approach in this skill are inspired by and synthesized from [Arjan Codes](https://www.arjancodes.com/)' courses: *The Software Designer Mindset*, *Pythonic Patterns*, and *Complete Extension*. The specific Pythonic framing (Protocol-based DI, functional pattern progression, three-layer FastAPI architecture) originates from his teaching. This skill distills those principles into actionable guidance — it is not a reproduction of course content. See also: [github.com/arjancodes](https://github.com/arjancodes) | [youtube.com/arjancodes](https://www.youtube.com/arjancodes).
 
 ## When to Apply
 
@@ -67,7 +68,7 @@ class Customer(BaseModel):
     email: str
 ```
 
-Use `**data.dict()` to unpack Pydantic models into DataObject dicts. Use `exclude_none=True` on update models for partial updates.
+Use `**data.model_dump()` to unpack Pydantic models into DataObject dicts. Use `exclude_none=True` on update models for partial updates.
 
 ## Seven Design Principles
 
@@ -98,6 +99,20 @@ When encountering these code smells, apply the corresponding pattern:
 | Need to react to events without coupling | Callback | Function passed as argument, called when event occurs |
 | Reusing a function with a different interface | Function Wrapper | Calls another function, translates its arguments |
 | Separating configuration from usage | Function Builder | Higher-order function returns a configured function |
+| Bare primitives for domain concepts (prices, emails) | Value Objects | Subclass built-in types with `__new__` validation, or frozen dataclass |
+| Need audit trail, temporal queries, or event replay | Event Sourcing | Immutable `Event[T]`, append-only `EventStore[T]`, projection functions |
+| Read/write patterns diverge; list views compute derived fields | CQRS | Separate write model + read projection, projector function after writes |
+| Complex object with many optional parts | Builder | Fluent API with `Self` return type, `.build()` returns frozen product |
+| Multiple DB writes that must succeed or fail together | Unit of Work | Context manager wrapping transaction: commit on success, rollback on error |
+| Need exactly one instance of a shared resource | Singleton | Module-level instance (preferred), or metaclass with `_instances` dict |
+| Object behaves differently depending on internal state | State | Protocol-based state objects, context delegates to current state |
+| Incompatible interface from external library | Adapter | Protocol interface + `functools.partial` for single-method adaptation |
+| Client coupled to complex subsystem details | Facade | Simplified interface class, `functools.partial` to bind dependencies |
+| Transient failures in external API/DB calls | Retry | `@retry` decorator with exponential backoff, fallback strategies |
+| Slow startup loading unused resources | Lazy Loading | `functools.cache`, TTL cache, generators, background preloading |
+| Data access logic mixed into domain classes | Repository | Protocol interface for CRUD, concrete implementations per backend |
+| Sequential operations on an object are verbose and error-prone | Fluent Interface | Methods return `self` for chaining, domain-specific verbs |
+| Need extensibility without modifying core code | Plugin Architecture | Config-driven creation, `importlib` auto-discovery, self-registering modules |
 
 ### Default preferences for all patterns:
 
@@ -112,24 +127,24 @@ When asked to create a new FastAPI project, generate this structure:
 
 ```
 project_name/
-├── src/
-│   ├── main.py              # FastAPI app, include_router, startup events
-│   ├── routers/
-│   │   ├── __init__.py
-│   │   └── {entity}.py      # APIRouter, endpoint functions
-│   ├── operations/
-│   │   ├── __init__.py
-│   │   └── {entity}.py      # Business logic functions
-│   ├── db/
-│   │   ├── __init__.py
-│   │   ├── database.py       # Engine, SessionLocal, Base
-│   │   ├── db_interface.py   # Generic DBInterface class
-│   │   └── models.py         # SQLAlchemy models
-│   └── models/
-│       ├── __init__.py
-│       └── {entity}.py       # Pydantic models + DataInterface Protocol
+├── main.py                    # FastAPI app, include_router, lifespan handler
+├── routers/
+│   ├── __init__.py
+│   └── {entity}.py            # APIRouter, endpoint functions
+├── operations/
+│   ├── __init__.py
+│   ├── interface.py           # DataInterface Protocol + DataInterfaceStub
+│   └── {entity}.py            # Business logic functions
+├── db/
+│   ├── __init__.py
+│   ├── database.py            # Engine, SessionLocal, Base
+│   ├── db_interface.py        # Generic DBInterface class
+│   └── models.py              # SQLAlchemy models
+├── models/
+│   ├── __init__.py
+│   └── {entity}.py            # Pydantic Create/Read models
 ├── tests/
-│   └── test_{entity}.py      # Tests using DataInterfaceStub
+│   └── test_{entity}.py       # Tests using DataInterfaceStub
 ├── requirements.txt
 └── .gitignore
 ```
@@ -139,10 +154,16 @@ project_name/
 Create a `DataInterfaceStub` base class that stores data in a plain dict. Override specific methods in test-specific subclasses. Pass the stub to operations functions — no database needed.
 
 ```python
+from typing import Any
+
+DataObject = dict[str, Any]
+
 class DataInterfaceStub:
     def __init__(self):
         self.data: dict[str, DataObject] = {}
     def read_by_id(self, id: str) -> DataObject:
+        if id not in self.data:
+            raise KeyError(f"Not found: {id}")
         return self.data[id]
     def read_all(self) -> list[DataObject]:
         return list(self.data.values())
@@ -150,9 +171,13 @@ class DataInterfaceStub:
         self.data[data["id"]] = data
         return data
     def update(self, id: str, data: DataObject) -> DataObject:
+        if id not in self.data:
+            raise KeyError(f"Not found: {id}")
         self.data[id].update(data)
         return self.data[id]
     def delete(self, id: str) -> None:
+        if id not in self.data:
+            raise KeyError(f"Not found: {id}")
         del self.data[id]
 ```
 
@@ -193,7 +218,7 @@ Before starting the review, ask the user: "Which review depth?" with options:
    - **Start with the Data** — Prefixed fields? Parallel lists? Methods far from data?
    - **Keep Things Simple** — Over-engineered? Speculative features? Unnecessary abstractions?
 
-4. **Check code quality** — Apply the 17 design rules:
+4. **Check code quality** — Apply the 22 design rules:
    - No type abuse, vague identifiers, flag parameters, deep nesting
    - Tell don't ask, no parallel data structures, no god classes
    - No broad exception catching, no mutable defaults, no wildcard imports
@@ -284,13 +309,13 @@ If the user chose standard, use only the checklists above — do not load refere
 
 **Input:** A file or directory path (default: current working directory).
 
-Run a focused code quality check against the 17 design rules. This is a lighter, faster check than a full architecture review.
+Run a focused code quality check against the 22 design rules. This is a lighter, faster check than a full architecture review.
 
 #### Process
 
 1. **Read the code** — Find and read ALL Python files in the target path recursively.
 
-2. **Check the 17 rules** — For each file, check:
+2. **Check the 22 rules** — For each file, check:
 
    **Naming & Structure:**
    1. No type abuse (don't embed type in name: `user_list` → `users`)
@@ -342,7 +367,7 @@ Run a focused code quality check against the 17 design rules. This is a lighter,
 
 **Input:** A file or directory path (default: current working directory).
 
-Scan the code and recommend which of the 11 Pythonic design patterns would improve it.
+Scan the code and recommend which of the 25 Pythonic design patterns would improve it.
 
 #### Process
 
@@ -616,8 +641,12 @@ For detailed guidance beyond this overview, consult:
 
 **Architecture & Design:**
 - **`references/design-principles.md`** — Full treatment of the seven design principles with refactoring recipes and code examples
-- **`references/layered-architecture.md`** — Detailed three-layer architecture guide: DataInterface, DBInterface, router composition, Pydantic models, to_dict utility
+- **`references/grasp-principles.md`** — GRASP principles: Creator, Information Expert, Controller, Low Coupling, High Cohesion, Polymorphism, Indirection, Protected Variations, Pure Fabrication
+- **`references/domain-driven-design.md`** — Domain-Driven Design: domain models, ubiquitous language, model distillation, code as temporary expression
+- **`references/layered-architecture.md`** — Detailed three-layer architecture guide: DataInterface (Repository pattern), DBInterface, router composition, Pydantic models, to_dict utility
 - **`references/testable-api.md`** — Testing strategy: stub-based testing, DataInterfaceStub, test isolation, no-database testing
+- **`references/testing-advanced.md`** — Pytest organization, property-based testing (Hypothesis), model-based stateful testing, code coverage philosophy
+- **`references/rest-api-design.md`** — HTTP method semantics, status codes, resource naming, pagination, error response format, OpenAPI, versioning
 
 **Python Fundamentals:**
 - **`references/classes-and-dataclasses.md`** — When to use classes vs dataclasses, @dataclass, field(), frozen, encapsulation
@@ -625,7 +654,7 @@ For detailed guidance beyond this overview, consult:
 - **`references/data-structures.md`** — Choosing list vs dict vs tuple vs set, enums, performance trade-offs
 - **`references/types-and-type-hints.md`** — Python's type system, Callable types, nominal vs structural typing, best practices
 - **`references/error-handling.md`** — Custom exceptions, context managers, error handling layers, anti-patterns
-- **`references/code-quality.md`** — 17 code quality rules: naming, nesting, flags, type abuse, and code review checklist
+- **`references/code-quality.md`** — 22 code quality rules: naming, nesting, flags, type abuse, isinstance dispatch, overloaded classes, and code review checklist
 - **`references/project-organization.md`** — Modules, packages, imports, folder structure, avoid "utils" anti-pattern
 - **`references/context-managers.md`** — Context manager protocol, `__enter__`/`__exit__`, `@contextmanager`, `ExitStack`, async context managers
 - **`references/decorators.md`** — Decorator patterns: retry with backoff, logging, timing, `functools.wraps`, parameterized decorators
@@ -634,7 +663,7 @@ For detailed guidance beyond this overview, consult:
 - **`references/pattern-matching.md`** — Structural pattern matching (`match`/`case`): literal, capture, OR, sequence, class, mapping patterns, guard clauses
 
 **Pythonic Patterns:**
-- **`references/pythonic-patterns.md`** — Quick reference lookup table for all 10 patterns (use for reviews and pattern selection)
+- **`references/pythonic-patterns.md`** — Quick reference lookup table for all 25 patterns (use for reviews and pattern selection)
 
 **Pythonic Patterns (full progressions from OOP → functional):**
 - **`references/patterns/strategy.md`** — Callable type alias, closures, functools.partial
@@ -646,7 +675,32 @@ For detailed guidance beyond this overview, consult:
 - **`references/patterns/template-method.md`** — Free function + Protocol parameters, protocol segregation
 - **`references/patterns/pipeline.md`** — Chain of Responsibility, functools.reduce composition, pandas .pipe()
 - **`references/patterns/functional.md`** — Callback, Function Wrapper, Function Builder patterns
+- **`references/patterns/retry.md`** — Exponential backoff, `@retry` decorator, fallback strategies, tenacity library
+- **`references/patterns/lazy-loading.md`** — `functools.cache`, TTL cache, generators, background preloading
+- **`references/patterns/plugin-architecture.md`** — Config-driven plugins, `importlib` auto-discovery, self-registering modules, Protocol conformance
+
+**Architectural & Domain Patterns:**
+- **`references/patterns/repository.md`** — Repository pattern: separating data storage from data access, relationship to DataInterface
+- **`references/patterns/fluent-interface.md`** — Method chaining with `return self`, domain-specific verbs, when to use vs Builder
+- **`references/patterns/value-objects.md`** — Wrapping primitives in validated domain types: Price, Percentage, EmailAddress
+- **`references/patterns/event-sourcing.md`** — Immutable events, EventStore[T], projections, cache invalidation
+- **`references/patterns/cqrs.md`** — Separate read/write models, command handlers, projector functions
+- **`references/patterns/builder.md`** — Fluent API with Self return type, mutable builder to immutable product
+- **`references/patterns/unit-of-work.md`** — Transaction context managers, automatic rollback, repository composition
+- **`references/patterns/singleton.md`** — Module-level instance (preferred), metaclass approach, thread safety
+- **`references/patterns/state.md`** — Protocol-based state objects, context delegation, state transitions
+- **`references/patterns/adapter.md`** — Object adapter (composition), function adapter (partial), Protocol interface
+- **`references/patterns/facade.md`** — Simplified interface to complex subsystems, partial for controller binding
+
+**Advanced Error Handling:**
+- **`references/monadic-error-handling.md`** — Railway-oriented programming: Result types, `@safe` decorator, `flow()`/`bind()` composition (functional alternative to exceptions)
+
+**Advanced Topics:**
+- **`references/code-smells.md`** — Code smell catalog: detection, severity, targeted fixes
+- **`references/dependency-injection.md`** — Complete DI guide: manual injection to Protocol-based abstraction
+- **`references/domain-modeling.md`** — Domain modeling: entities, value objects, relationships, data-first design
+- **`references/refactoring-case-studies.md`** — Recurring refactoring transformations from real-world code reviews
 
 ### Example Files
 
-- **`assets/fastapi-hotel-api/`** — Complete working FastAPI project demonstrating all patterns: rooms, customers, bookings with computed prices
+- **`assets/fastapi-hotel-api/`** — Complete working FastAPI project demonstrating all patterns: rooms, customers, and bookings with computed prices

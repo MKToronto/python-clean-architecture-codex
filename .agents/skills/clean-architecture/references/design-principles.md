@@ -33,6 +33,25 @@ class PaymentProcessor:
     def pay_credit(self, order, security_code): ...
 ```
 
+**Separate I/O from Domain Models:** Replace `print()`-based methods with `__str__()` methods that return strings. Move all `input()` calls to the controller/game/router layer. This makes model classes reusable across different UIs.
+
+```python
+# BEFORE: model does I/O
+class Hand:
+    def show_hand(self): print(f"Hand: {self.dice}")
+    def re_roll(self):
+        choice = input("Which dice to re-roll? ")  # I/O in model
+
+# AFTER: model returns data, controller does I/O
+class Hand:
+    def __str__(self) -> str: return f"Hand: {self.dice}"
+
+class Game:
+    def play_turn(self):
+        print(self.hand)  # controller does I/O
+        choice = input("Which dice to re-roll? ")
+```
+
 **Extract Function:** When a function does multiple things, pull each concern into its own function.
 
 ```python
@@ -82,6 +101,66 @@ Minimize dependencies between classes, functions, and modules.
 6. **Data Coupling** — Sharing data via parameters. Normal and expected.
 7. **Message Coupling** — Communication via events/messages. Lightest coupling.
 
+### Coupling Examples (Before/After)
+
+**Content Coupling** — directly accessing another class's private state:
+
+```python
+@dataclass
+class Account:
+    _balance: int = 0
+
+    def withdraw(self, amount: int) -> None:
+        self._balance -= amount
+
+# BAD: reaches into Account internals
+def pay_service_fee(account: Account, payment_type: PaymentType) -> None:
+    account._balance -= SERVICE_FEES[payment_type]
+
+# GOOD: use the class's own method
+def pay_service_fee(account: Account, payment_type: PaymentType) -> None:
+    account.withdraw(SERVICE_FEES[payment_type])
+```
+
+**Global Coupling** — module-level constants used directly by functions:
+
+```python
+# BAD: function depends on global state
+API_URL = "https://api.company.com"
+TOKEN = "a3f5c7e8..."
+
+def make_request(path: str, data: dict | None = None) -> None:
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    fullpath = f"{API_URL}/{path}"
+
+# GOOD: encapsulate configuration in a dataclass
+@dataclass
+class APIClient:
+    api_url: str
+    token: str
+
+    def post(self, path: str, data: dict | None = None) -> None:
+        headers = {"Authorization": f"Bearer {self.token}"}
+        fullpath = f"{self.api_url}/{path}"
+```
+
+**Stamp Coupling** — passing an entire object when only part is needed:
+
+```python
+# BAD: log_transaction receives full Transaction but only uses 3 fields
+def log_transaction(transaction: Transaction) -> None:
+    print(f"Logging {transaction.transaction_type} ID {transaction.transaction_id}")
+
+# GOOD: accept a Protocol with only the fields needed
+class LoggableTransaction(Protocol):
+    transaction_id: int
+    transaction_type: TransactionType
+    timestamp: datetime
+
+def log_transaction(transaction: LoggableTransaction) -> None:
+    print(f"Logging {transaction.transaction_type} ID {transaction.transaction_id}")
+```
+
 ### Law of Demeter (Principle of Least Knowledge)
 
 A unit of code should only talk to closely related units. Never chain through multiple objects.
@@ -101,6 +180,36 @@ total = rental.total_price
 - **Pass only what a function needs** — `read_vehicle_type(vehicle_types: list[str])` not the entire dict
 - **Extract magic numbers into configurable attributes** — `km_free_limit: int = 100`
 - **Replace globals with local variables in composition root** — `VEHICLE_DATA` constant becomes local `vehicle_data`
+- **Introduce an intermediate data structure** — When two subsystems are tightly coupled, define a shared data structure (DTO, formal representation) between them. Each side depends only on that structure, not on the other's internals. Example: Python bytecode sits between the interpreter and runner; a formal accident report sits between NLP and 3D simulation.
+- **Eliminate inappropriate intimacy** — If a function receives a complex object but only uses one nested attribute, pass that attribute directly instead.
+
+### The Coupling Tradeoff Chain
+
+Removing one type of coupling often introduces another. The goal is to find the least-harmful form:
+
+```python
+# Step 1: Global coupling (BAD)
+API_URL = "https://api.company.com"
+TOKEN = "a3f5c7e8..."
+
+def make_request(path: str) -> None:
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    ...
+
+# Step 2: Data coupling -- removes globals but adds 6 arguments (BETTER but noisy)
+def make_request(api_url: str, version: str, token: str,
+                 account_id: int, path: str, data: dict | None = None) -> None: ...
+
+# Step 3: Class grouping -- best balance
+@dataclass
+class APIClient:
+    api_url: str
+    version: str
+    token: str
+    account_id: int
+
+    def make_request(self, path: str, data: dict | None = None) -> None: ...
+```
 
 ---
 
@@ -121,6 +230,14 @@ class Payable(Protocol):
 - No inheritance needed in implementing classes — structural typing handles matching
 - The Protocol belongs conceptually to the **consumer** (the function that uses it), not the implementor
 - Implementing classes satisfy the Protocol by having the right methods/attributes
+- **Do not include `__init__` in Protocols** — different implementations need different constructor arguments. Only specify the methods the consumer calls.
+
+### Dependency Injection vs Dependency Inversion
+
+- **Dependency Injection (DI)** is the *mechanism*: pass dependencies as arguments instead of creating them internally. This alone improves testability.
+- **Dependency Inversion Principle (DIP)** is the *principle*: depend on abstractions (Protocol), not concrete classes. DIP requires DI, but DI does not require DIP.
+- **DI without DIP**: `PaymentProcessor(authorizer: SMSAuthorizer)` — injected, but still coupled to a concrete class.
+- **DI with DIP**: `PaymentProcessor(authorizer: Authorizer)` where `Authorizer` is a Protocol — injected AND decoupled.
 
 ### Callable for Function Abstractions
 
@@ -159,6 +276,19 @@ Do not start from design patterns and try to apply them. Start from identifying 
 ## 4. Composition over Inheritance
 
 Inheritance is the strongest coupling that exists. Use composition instead.
+
+**Configuration vs Subclasses:** Use subclasses when behavior changes (different methods, different algorithms). Use configuration (constructor arguments or a config file) when only values change (different health, speed, damage). A subclass that only overrides `__init__` to set different values is a configuration problem, not an inheritance problem.
+
+```python
+# BAD: subclass only changes values, not behavior
+class Monster1(Monster):
+    def __init__(self):
+        super().__init__(health=100, speed=2)
+
+# GOOD: single class, different configurations
+monster1 = Monster(health=100, speed=2, color="red")
+monster2 = Monster(health=200, speed=1, color="blue")
+```
 
 ### The Composition Pattern
 
@@ -237,7 +367,9 @@ factories: dict[str, ExporterFactory] = {
 factory = factories[export_quality]
 ```
 
-### Creator Functions (Pythonic Factory)
+### Static Factory Method `from_X` Pattern
+
+When creating objects from external representations (serialization formats, config
 
 When different types need different creation logic:
 
@@ -259,7 +391,30 @@ def read_payment_processor() -> PaymentProcessor:
 
 ### The "Single Dirty Place"
 
-A well-designed system has exactly one place where all concrete wiring happens — the composition root. In FastAPI, the router serves as the composition root.
+A well-designed system has one conceptual place where all concrete wiring happens — the composition root. In a standalone script, this is the `main()` function. In FastAPI, the **router layer** serves as the composition root — the topmost layer where concrete database implementations are chosen and injected into operations.
+
+For production FastAPI apps, use `Depends()` to centralize dependency creation instead of repeating it in every endpoint:
+
+```python
+from fastapi import Depends
+from sqlalchemy.orm import Session
+
+def get_db() -> Generator[Session, None, None]:
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+def get_room_interface(session: Session = Depends(get_db)) -> DBInterface:
+    return DBInterface(session, DBRoom)
+
+@router.get("/", response_model=list[Room])
+def read_all_rooms(data_interface: DBInterface = Depends(get_room_interface)):
+    return room_ops.read_all_rooms(data_interface)
+```
+
+This keeps the wiring in one place (the dependency provider functions) and makes testing easier via dependency overrides.
 
 ### Open-Closed Principle
 
@@ -271,15 +426,15 @@ The dictionary-mapping approach means the system is open for extension (add new 
 
 The shape of data structures directly determines architecture quality.
 
-### Information Expert Principle (GRASP)
+### Information Expert Principle (GRASP) & Tell, Don't Ask
 
-Place behavior on the class that has the data needed to perform it:
+Place behavior on the class that has the data needed to perform it. Instead of retrieving data from an object and computing externally, **tell** the object to do the computation itself — it is closest to the data.
 
 ```python
-# BAD: main reaches into rental and vehicle
+# BAD (Ask): pull data out, compute externally
 total = rental.vehicle.total_price(rental.days, rental.additional_km)
 
-# GOOD: RentalContract delegates to Vehicle
+# GOOD (Tell): tell the object to compute it
 @dataclass
 class RentalContract:
     vehicle: Vehicle
@@ -319,6 +474,8 @@ Extract shared logic into reusable functions. But apply **AHA (Avoid Hasty Abstr
 ### KISS — Keep It Stupidly Simple
 
 Use the simplest design that meets current requirements. If two class attributes solve the problem, do not build a strategy pattern with polymorphic classes.
+
+**The Boilerplate-to-Logic Ratio:** If a project has more boilerplate (abstract base classes, argument classes, factory classes, controller wrappers) than actual logic that does something, the design is over-engineered. If abstracting "for the future" introduces more code than the current concrete implementation, defer the abstraction. When you actually need the GUI/web/mobile version, refactoring a clean, simple codebase is easier than navigating an over-abstracted one.
 
 ### YAGNI — You Ain't Gonna Need It
 

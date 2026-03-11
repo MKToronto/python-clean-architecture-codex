@@ -55,13 +55,13 @@ class RoomUpdate(BaseModel):
     price: int | None = None
 ```
 
-Use `data.dict(exclude_none=True)` to get only the fields that were actually provided.
+Use `data.model_dump(exclude_none=True)` to get only the fields that were actually provided.
 
 ---
 
-## The DataInterface Protocol
+## The DataInterface Protocol (Repository Pattern)
 
-The contract between operations and database layers:
+The contract between operations and database layers. This is the Repository pattern — an abstraction that separates data access from business logic, allowing operations to work with any data source through a uniform interface:
 
 ```python
 from typing import Any, Protocol
@@ -89,6 +89,7 @@ Using plain dicts as the data transfer format decouples operations from ORM mode
 A single class parameterized by SQLAlchemy model class:
 
 ```python
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from typing import Any
 
@@ -100,11 +101,13 @@ class DBInterface:
         self.db_class = db_class
 
     def read_by_id(self, id: str) -> DataObject:
-        obj = self.db_session.query(self.db_class).get(id)
+        obj = self.db_session.get(self.db_class, id)
+        if obj is None:
+            raise KeyError(f"Not found: {id}")
         return to_dict(obj)
 
     def read_all(self) -> list[DataObject]:
-        objects = self.db_session.query(self.db_class).all()
+        objects = self.db_session.scalars(select(self.db_class)).all()
         return [to_dict(obj) for obj in objects]
 
     def create(self, data: DataObject) -> DataObject:
@@ -114,14 +117,18 @@ class DBInterface:
         return to_dict(obj)
 
     def update(self, id: str, data: DataObject) -> DataObject:
-        obj = self.db_session.query(self.db_class).get(id)
+        obj = self.db_session.get(self.db_class, id)
+        if obj is None:
+            raise KeyError(f"Not found: {id}")
         for key, value in data.items():
             setattr(obj, key, value)
         self.db_session.commit()
         return to_dict(obj)
 
     def delete(self, id: str) -> None:
-        obj = self.db_session.query(self.db_class).get(id)
+        obj = self.db_session.get(self.db_class, id)
+        if obj is None:
+            raise KeyError(f"Not found: {id}")
         self.db_session.delete(obj)
         self.db_session.commit()
 ```
@@ -168,11 +175,9 @@ Base = declarative_base()
 Pure business logic functions. Accept `DataInterface` as a parameter.
 
 ```python
-from models.room import DataInterface, RoomCreate, Room
-from typing import Any
+from models.room import RoomCreate, Room
+from operations.interface import DataInterface
 import uuid
-
-DataObject = dict[str, Any]
 
 def read_all_rooms(data_interface: DataInterface) -> list[Room]:
     rooms = data_interface.read_all()
@@ -183,7 +188,7 @@ def read_room(room_id: str, data_interface: DataInterface) -> Room:
     return Room(**room)
 
 def create_room(data: RoomCreate, data_interface: DataInterface) -> Room:
-    room_data = data.dict()
+    room_data = data.model_dump()
     room_data["id"] = str(uuid.uuid4())
     created = data_interface.create(room_data)
     return Room(**created)
@@ -203,7 +208,7 @@ def create_booking(data: BookingCreate, data_interface: DataInterface,
     nights = (data.to_date - data.from_date).days
     price = nights * room["price"]
 
-    booking_data = data.dict()
+    booking_data = data.model_dump()
     booking_data["id"] = str(uuid.uuid4())
     booking_data["price"] = price
     created = data_interface.create(booking_data)
@@ -214,55 +219,84 @@ def create_booking(data: BookingCreate, data_interface: DataInterface,
 
 ## Router Layer (Composition Root)
 
-The router is where concrete database implementations are injected into operations.
+The router layer is the "single dirty place" — the conceptual composition root where concrete database implementations are chosen and injected into operations.
+
+### Production Approach: FastAPI `Depends()`
+
+Use FastAPI's built-in dependency injection to centralize dependency creation. This avoids repeating `SessionLocal()` and `DBInterface(...)` in every endpoint:
 
 ```python
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
 from db.database import SessionLocal
 from db.db_interface import DBInterface
 from db.models import DBRoom
 from operations import room as room_ops
 from models.room import Room, RoomCreate
+from typing import Generator
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
 
+
+def get_db() -> Generator[Session, None, None]:
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def get_room_interface(session: Session = Depends(get_db)) -> DBInterface:
+    return DBInterface(session, DBRoom)
+
+
+@router.get("/", response_model=list[Room])
+def read_all_rooms(data_interface: DBInterface = Depends(get_room_interface)):
+    return room_ops.read_all_rooms(data_interface)
+
+@router.get("/{room_id}", response_model=Room)
+def read_room(room_id: str, data_interface: DBInterface = Depends(get_room_interface)):
+    return room_ops.read_room(room_id, data_interface)
+
+@router.post("/", response_model=Room)
+def create_room(data: RoomCreate, data_interface: DBInterface = Depends(get_room_interface)):
+    return room_ops.create_room(data, data_interface)
+
+@router.delete("/{room_id}")
+def delete_room(room_id: str, data_interface: DBInterface = Depends(get_room_interface)):
+    return room_ops.delete_room(room_id, data_interface)
+```
+
+The dependency provider functions (`get_db`, `get_room_interface`) are the composition root — the single place where concrete wiring decisions are made. In tests, override them via `app.dependency_overrides[get_room_interface] = lambda: mock_interface`.
+
+### Teaching Simplification: Manual Injection
+
+For learning purposes, you may see the simpler pattern of creating dependencies directly in each endpoint:
+
+```python
 @router.get("/", response_model=list[Room])
 def read_all_rooms():
     session = SessionLocal()
     data_interface = DBInterface(session, DBRoom)
     return room_ops.read_all_rooms(data_interface)
-
-@router.get("/{room_id}", response_model=Room)
-def read_room(room_id: str):
-    session = SessionLocal()
-    data_interface = DBInterface(session, DBRoom)
-    return room_ops.read_room(room_id, data_interface)
-
-@router.post("/", response_model=Room)
-def create_room(data: RoomCreate):
-    session = SessionLocal()
-    data_interface = DBInterface(session, DBRoom)
-    return room_ops.create_room(data, data_interface)
-
-@router.delete("/{room_id}")
-def delete_room(room_id: str):
-    session = SessionLocal()
-    data_interface = DBInterface(session, DBRoom)
-    return room_ops.delete_room(room_id, data_interface)
 ```
+
+This demonstrates the same principle (router as composition root) but repeats the wiring in every endpoint. The `Depends()` approach above is preferred for production code.
 
 ### Main App
 
 ```python
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from db.database import engine, Base
 from routers import rooms, customers, bookings
 
-app = FastAPI()
-
-@app.on_event("startup")
-def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 app.include_router(rooms.router)
 app.include_router(customers.router)
@@ -271,11 +305,175 @@ app.include_router(bookings.router)
 
 ---
 
+## SQLAlchemy Relationships
+
+When entities reference each other (e.g., a Booking references a Room), use ForeignKey and `relationship()`.
+
+### Defining Relationships
+
+```python
+from sqlalchemy import Column, String, Integer, ForeignKey, Date
+from sqlalchemy.orm import relationship
+from db.database import Base
+
+class DBRoom(Base):
+    __tablename__ = "rooms"
+    id = Column(String, primary_key=True)
+    number = Column(String, nullable=False)
+    size = Column(Integer, nullable=False)
+    price = Column(Integer, nullable=False)
+    bookings = relationship("DBBooking", back_populates="room", cascade="all, delete-orphan")
+
+class DBBooking(Base):
+    __tablename__ = "bookings"
+    id = Column(String, primary_key=True)
+    room_id = Column(String, ForeignKey("rooms.id"), nullable=False)
+    customer_id = Column(String, ForeignKey("customers.id"), nullable=False)
+    from_date = Column(Date, nullable=False)
+    to_date = Column(Date, nullable=False)
+    price = Column(Integer, nullable=False)
+    room = relationship("DBRoom", back_populates="bookings")
+```
+
+### Cascade Delete
+
+`cascade="all, delete-orphan"` on the parent side means deleting a Room automatically deletes its Bookings. Use this when child entities have no meaning without the parent.
+
+### Serializing Nested Relationships in `to_dict()`
+
+The basic `to_dict()` only serializes columns. For nested relationships, extend it:
+
+```python
+def to_dict(obj, include_relations: list[str] | None = None) -> DataObject:
+    result = {col.name: getattr(obj, col.name) for col in obj.__table__.columns}
+    if include_relations:
+        for rel in include_relations:
+            related = getattr(obj, rel, None)
+            if isinstance(related, list):
+                result[rel] = [to_dict(item) for item in related]
+            elif related is not None:
+                result[rel] = to_dict(related)
+    return result
+```
+
+### Eager vs Lazy Loading
+
+By default, SQLAlchemy loads relationships lazily (on first access). This causes N+1 query problems when serializing lists.
+
+```python
+from sqlalchemy.orm import joinedload, selectinload
+
+# Eager load in one query (JOIN) — good for single-object fetches
+session.execute(select(DBRoom).options(joinedload(DBRoom.bookings)).where(DBRoom.id == room_id)).scalar_one()
+
+# Eager load via separate SELECT — good for list queries (avoids cartesian product)
+session.scalars(select(DBRoom).options(selectinload(DBRoom.bookings))).all()
+```
+
+**Rule of thumb:** Use `selectinload` for collections (one-to-many), `joinedload` for single objects (many-to-one).
+
+---
+
+## Scalable Project Structure
+
+For larger projects, add `config/` and cross-cutting concern modules alongside the three core layers:
+
+```
+{project_name}/
+├── main.py                      # FastAPI app, include_router, lifespan
+├── config/
+│   ├── __init__.py
+│   └── settings.py              # Pydantic BaseSettings, env vars
+├── routers/                     # Layer 1: HTTP/API
+│   ├── __init__.py
+│   └── {entity}.py
+├── operations/                  # Layer 2: Business logic
+│   ├── __init__.py
+│   ├── interface.py             # DataInterface Protocol + DataInterfaceStub
+│   └── {entity}.py
+├── db/                          # Layer 3: Persistence
+│   ├── __init__.py
+│   ├── database.py
+│   ├── db_interface.py
+│   └── models.py
+├── models/                      # Pydantic schemas (shared)
+│   ├── __init__.py
+│   └── {entity}.py
+├── tests/
+│   ├── conftest.py              # Shared fixtures
+│   └── test_{entity}.py
+├── requirements.txt
+└── .gitignore
+```
+
+### Environment Configuration with Pydantic Settings
+
+```python
+# config/settings.py
+from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
+
+class Settings(BaseSettings):
+    database_url: str = "sqlite:///./app.db"
+    debug: bool = False
+    api_title: str = "My API"
+
+    model_config = ConfigDict(env_file=".env")
+
+settings = Settings()
+```
+
+Use `settings.database_url` in `db/database.py` instead of hardcoding the URL.
+
+---
+
+## SQLModel Alternative
+
+SQLModel combines SQLAlchemy and Pydantic into one class — one model serves as both ORM model and API schema:
+
+```python
+from sqlmodel import SQLModel, Field
+
+class Room(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    number: str
+    size: int
+    price: int
+
+class RoomCreate(SQLModel):
+    number: str
+    size: int
+    price: int
+```
+
+**Advantages:** Less code, no `to_dict()` needed, single source of truth for field definitions.
+
+**Trade-off:** Tighter coupling between database and API schemas. When the database schema and API schema need to diverge (e.g., computed fields, different field names), separate SQLAlchemy + Pydantic models give more flexibility. For simple CRUD apps, SQLModel is an excellent choice.
+
+---
+
+## Production Readiness Checklist
+
+Before deploying a FastAPI application:
+
+- [ ] **Environment config** — All settings via environment variables or `.env` file (`pydantic-settings`)
+- [ ] **Health endpoint** — `GET /health` returning `{"status": "ok"}` (see `rest-api-design.md`)
+- [ ] **CORS configured** — `CORSMiddleware` with appropriate `allow_origins`
+- [ ] **Error handling** — Domain exceptions mapped to HTTP status codes (see `error-handling.md`)
+- [ ] **Input validation** — Pydantic models on all request bodies and query parameters
+- [ ] **Database migrations** — Alembic configured for schema evolution
+- [ ] **Logging** — Structured logging (not `print()`) with appropriate log levels
+- [ ] **Tests** — Operations tested with `DataInterfaceStub`, integration tests with test database
+- [ ] **Rate limiting** — SlowAPI or similar for public endpoints (see `rest-api-design.md`)
+- [ ] **Documentation** — OpenAPI docs enhanced with `summary`, `response_model`, `responses`
+
+---
+
 ## Adding a New Entity Checklist
 
 When adding a new entity (e.g., "bookings") to an existing project:
 
-1. **models/{entity}.py** — Define Pydantic Create, Update, and Read models. Define `DataInterface` Protocol if not using a shared one.
+1. **models/{entity}.py** — Define Pydantic Create, Update, and Read models. The `DataInterface` Protocol lives in `operations/interface.py`.
 2. **db/models.py** — Add SQLAlchemy model class (e.g., `DBBooking`).
 3. **operations/{entity}.py** — Write business logic functions accepting `DataInterface`. Include any computed values.
 4. **routers/{entity}.py** — Create `APIRouter`. Wire up endpoints, instantiate `DBInterface`, call operations.

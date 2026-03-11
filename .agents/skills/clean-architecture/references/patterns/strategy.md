@@ -177,7 +177,7 @@ class Order:
         return self.price * self.quantity - discount
 ```
 
-Both ABC and Protocol achieve the same decoupling. Protocol is preferred when there is no shared implementation in the base class.
+Both ABC and Protocol achieve the same decoupling. For the Strategy pattern specifically, either works — it comes down to preference. Protocol is a natural fit when there is no shared implementation in the base class. ABC is better when strategies share state or helper methods in the base class, or when you want instantiation-time error checking. See the full comparison in `references/design-principles.md`.
 
 ### What this solves
 
@@ -426,9 +426,11 @@ Confirm by asking: "Does this function do different things depending on a flag, 
 
 - **`functools.partial` and type checkers.** Pylance and mypy infer `partial[int]` for the return type, losing the full callable signature. The type checker cannot verify that the partially-applied function matches `DiscountFunction`. Accept this limitation or use a closure instead when type safety is critical.
 - **Lambda readability.** A single-line lambda in a closure is fine. Multi-line logic belongs in a named inner function (`def compute_discount(price: int) -> int:`), not a lambda.
-- **Callable classes still have a role.** When a strategy needs to carry mutable state between invocations (e.g., a counter, a cache), a dataclass with `__call__` is cleaner than a closure with `nonlocal` variables.
+- **Callable classes still have a role.** When a strategy needs configuration stored as instance variables (e.g., `PercentageDiscount(percentage=0.15)`) or mutable state between invocations (counter, cache), a dataclass with `__call__` is cleaner than a closure with `nonlocal` variables. See "When to Convert a Single-Method Class to a Function" in `references/function-design.md` for the full decision criteria.
 - **Do not over-extract.** A two-branch `if/else` that will never grow does not need a strategy pattern. Apply KISS -- only introduce the pattern when the branching is growing or the branches are complex.
 - **Protocol vs Callable.** A `Protocol` with a single method and a `Callable` type alias are functionally equivalent in Python. Prefer the `Callable` alias for brevity. Use a `Protocol` when the method name carries important semantic meaning (e.g., `def validate(self, data: dict) -> bool`).
+- **Strategy-specific parameters.** When different strategies need different configuration parameters, do not add all parameters to the shared interface. Each strategy should encapsulate its own configuration. A `PercentageDiscount` needs a `percentage` while a `FixedDiscount` needs a `fixed` amount — these are construction-time concerns, not part of the strategy interface. The `__call__` approach (Step B) or closure approach (Step D) handles this naturally.
+- **The `__call__` step is underrated.** Step B (dataclass with `__call__`) is often the practical sweet spot. It gives you named configuration (`PercentageDiscount(percentage=0.15)`), inspectable state, and a callable that matches `Callable[[int], int]` — combining the best of classes and functions.
 
 ---
 

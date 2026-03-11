@@ -1,6 +1,8 @@
 # Decorator Patterns Reference
 
-Decorators wrap a function to add behavior before, after, or around it — without modifying the original function. They are Python's native implementation of the Function Wrapper pattern. Content inspired by Arjan Codes' Software Designer Mindset course.
+Decorators wrap a function to add behavior before, after, or around it — without modifying the original function. They are Python's native implementation of the Function Wrapper pattern. Content inspired by Arjan Codes' courses.
+
+> **When to reach for decorators:** Decorators are useful for low-level cross-cutting concerns like logging and benchmarking. For higher-level design, prefer composing functions and objects directly — it keeps code simpler, easier to test, and easier for others to follow. Only use a decorator if it genuinely makes the code simpler and easier to deal with.
 
 ## 1. Basic Decorator Structure
 
@@ -70,36 +72,36 @@ from typing import Callable, Any
 
 
 def retry(
-    max_retries: int = 3,
-    base_delay: float = 1.0,
-    exceptions: tuple[type[Exception], ...] = (Exception,),
+    retries: int = 3,
+    delay: float = 1.0,
+    backoff: float = 2.0,
 ) -> Callable:
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            last_exception: Exception | None = None
-            for attempt in range(max_retries):
+            for attempt in range(1, retries + 1):
                 try:
                     return func(*args, **kwargs)
-                except exceptions as e:
-                    last_exception = e
-                    delay = base_delay * (2 ** attempt)
-                    time.sleep(delay)
-            raise last_exception
+                except Exception as e:
+                    if attempt == retries:
+                        raise
+                    wait = delay * (backoff ** (attempt - 1))
+                    time.sleep(wait)
+            raise RuntimeError("All retries failed")
         return wrapper
     return decorator
 
 
-@retry(max_retries=3, base_delay=0.5, exceptions=(ConnectionError, TimeoutError))
+@retry(retries=3, delay=0.5)
 def fetch_data(url: str) -> dict:
     ...
 ```
 
 ### Key design decisions
 
-- **Catch specific exceptions** — pass a tuple of expected failure types, never retry on all exceptions
-- **Exponential backoff** — `base_delay * (2 ** attempt)` prevents hammering a failing service
-- **Re-raise the last exception** — if all retries fail, the caller sees the original error, not a generic one
+- **Catch `Exception` broadly, re-raise after exhaustion** — this is one of the rare cases where catching `Exception` is acceptable, because the decorator always re-raises the original error if all retries fail. The re-raise is the safety mechanism. For production code with many exception types, consider the `tenacity` library which offers `retry_if_exception_type` for finer control (see `patterns/retry.md`)
+- **Exponential backoff** — `delay * (backoff ** (attempt - 1))` prevents hammering a failing service. With default values: 1s → 2s → 4s
+- **Re-raise the original exception** — if all retries fail, the caller sees the real error, not a generic one
 
 ### Async version
 
@@ -110,22 +112,22 @@ from typing import Callable, Any
 
 
 def async_retry(
-    max_retries: int = 3,
-    base_delay: float = 1.0,
-    exceptions: tuple[type[Exception], ...] = (Exception,),
+    retries: int = 3,
+    delay: float = 1.0,
+    backoff: float = 2.0,
 ) -> Callable:
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            last_exception: Exception | None = None
-            for attempt in range(max_retries):
+            for attempt in range(1, retries + 1):
                 try:
                     return await func(*args, **kwargs)
-                except exceptions as e:
-                    last_exception = e
-                    delay = base_delay * (2 ** attempt)
-                    await asyncio.sleep(delay)
-            raise last_exception
+                except Exception as e:
+                    if attempt == retries:
+                        raise
+                    wait = delay * (backoff ** (attempt - 1))
+                    await asyncio.sleep(wait)
+            raise RuntimeError("All retries failed")
         return wrapper
     return decorator
 ```
@@ -177,7 +179,7 @@ def decorator(param):
     return actual_decorator
 ```
 
-The retry decorator above is a parameterized decorator — `retry(max_retries=3)` returns the actual decorator, which is then applied to the function.
+The retry decorator above is a parameterized decorator — `retry(retries=3)` returns the actual decorator, which is then applied to the function.
 
 ---
 
@@ -188,12 +190,12 @@ Multiple decorators apply bottom-up (closest to the function runs first):
 ```python
 @log_calls      # 3. logs the retry-wrapped, timed function
 @timed          # 2. times the retry-wrapped function
-@retry(max_retries=3)  # 1. adds retry behavior to the original function
+@retry(retries=3)  # 1. adds retry behavior to the original function
 def fetch_data(url: str) -> dict:
     ...
 ```
 
-The execution order is: `log_calls(timed(retry(max_retries=3)(fetch_data)))`.
+The execution order is: `log_calls(timed(retry(retries=3)(fetch_data)))`.
 
 ---
 
@@ -246,7 +248,7 @@ Decorators are best for concerns that apply uniformly across many functions. If 
 ### Do
 
 - Always use `@functools.wraps(func)` on the wrapper function
-- Catch specific exceptions in retry decorators, never `Exception`
+- In retry decorators, catching `Exception` broadly is acceptable because the decorator re-raises after exhaustion — the re-raise is the safety mechanism. For finer control in production, use the `tenacity` library (see `patterns/retry.md`)
 - Keep decorators focused on one concern (logging OR retry, not both)
 - Type hint decorator parameters and return types
 - Use parameterized decorators when the decorator needs configuration

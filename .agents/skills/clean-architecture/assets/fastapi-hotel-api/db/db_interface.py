@@ -1,5 +1,17 @@
+"""Generic database interface — wraps any SQLAlchemy model with CRUD methods.
+
+Intentional upgrades from transcript:
+  - Session injected via __init__ (transcript used global db_session import)
+  - SQLAlchemy 2.0 API: session.get() and session.scalars(select()) replace
+    legacy session.query().get() and session.query().all()
+  - KeyError raised on missing objects (transcript returned None silently)
+  - delete() returns None (transcript returned the deleted object)
+  - to_dict() lives here rather than in models.py for colocation with DBInterface
+"""
+
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 DataObject = dict[str, Any]
@@ -15,13 +27,13 @@ class DBInterface:
         self.db_class = db_class
 
     def read_by_id(self, id: str) -> DataObject:
-        obj = self.db_session.query(self.db_class).get(id)
+        obj = self.db_session.get(self.db_class, id)
         if obj is None:
             raise KeyError(f"Not found: {id}")
         return to_dict(obj)
 
     def read_all(self) -> list[DataObject]:
-        objects = self.db_session.query(self.db_class).all()
+        objects = self.db_session.scalars(select(self.db_class)).all()
         return [to_dict(obj) for obj in objects]
 
     def create(self, data: DataObject) -> DataObject:
@@ -31,7 +43,7 @@ class DBInterface:
         return to_dict(obj)
 
     def update(self, id: str, data: DataObject) -> DataObject:
-        obj = self.db_session.query(self.db_class).get(id)
+        obj = self.db_session.get(self.db_class, id)
         if obj is None:
             raise KeyError(f"Not found: {id}")
         for key, value in data.items():
@@ -40,7 +52,7 @@ class DBInterface:
         return to_dict(obj)
 
     def delete(self, id: str) -> None:
-        obj = self.db_session.query(self.db_class).get(id)
+        obj = self.db_session.get(self.db_class, id)
         if obj is None:
             raise KeyError(f"Not found: {id}")
         self.db_session.delete(obj)

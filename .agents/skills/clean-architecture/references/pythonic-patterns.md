@@ -4,7 +4,7 @@ Classic design patterns reimagined for Python. This is a concise lookup table �
 
 ## General Rules
 
-- **Protocol over ABC** — unless shared state in the superclass is needed
+- **Protocol as default, ABC when needed** — use Protocol for loose coupling; use ABC when shared superclass state, instantiation-time error checking, or IDE "implement methods" assistance is needed
 - **`functools.partial`** — to configure generic functions rather than creating wrapper classes
 - **Closures** — to separate configuration-time args from runtime args
 - **`Callable` type aliases** — to replace single-method abstract classes
@@ -192,20 +192,22 @@ def run(args: dict[str, Any]) -> None:
 
 ```python
 class TradingEngine(Protocol):
-    def get_price_data(self) -> list[int]: ...
-    def get_amount(self) -> int: ...
-    def buy(self, symbol: str, amount: int) -> None: ...
-    def sell(self, symbol: str, amount: int) -> None: ...
+    def get_price_data(self) -> list[float]: ...
+    def get_amount(self) -> float: ...
+    def buy(self, amount: float) -> None: ...
+    def sell(self, amount: float) -> None: ...
 
 class TradingStrategy(Protocol):
-    def should_buy(self) -> bool: ...
-    def should_sell(self) -> bool: ...
+    def should_buy(self, prices: list[float]) -> bool: ...
+    def should_sell(self, prices: list[float]) -> bool: ...
 
 def trade(engine: TradingEngine, strategy: TradingStrategy) -> None:
-    if strategy.should_buy():
-        engine.buy(symbol, engine.get_amount())
-    elif strategy.should_sell():
-        engine.sell(symbol, engine.get_amount())
+    prices = engine.get_price_data()
+    amount = engine.get_amount()
+    if strategy.should_buy(prices):
+        engine.buy(amount)
+    elif strategy.should_sell(prices):
+        engine.sell(amount)
 ```
 
 **Protocol Segregation** — split one large protocol into smaller focused ones. Pythonic alternative to mixins.
@@ -283,3 +285,321 @@ def create_email_sender(smtp_server: str, port: int, user: str, password: str) -
 ```
 
 → Full progression: `patterns/functional.md`
+
+---
+
+## Architectural & Domain Patterns
+
+### Value Objects
+
+**Recognize:** Bare primitives (float, str) representing domain concepts — prices, emails, percentages — with no validation.
+
+**Pythonic implementation:** Subclass built-in types with validation in `__new__`, or use frozen dataclasses with `__post_init__`:
+
+```python
+class Price(float):
+    def __new__(cls, value) -> Self:
+        val = float(value)
+        if val < 0:
+            raise ValueError("Price must be non-negative")
+        return super().__new__(cls, val)
+
+@dataclass(frozen=True)
+class EmailAddress:
+    value: str
+    def __post_init__(self) -> None:
+        if not EMAIL_RE.match(self.value):
+            raise ValueError(f"Invalid email: {self.value}")
+```
+
+→ Full reference: `patterns/value-objects.md`
+
+### Event Sourcing
+
+**Recognize:** Need audit trails, temporal queries, or multiple derived views of the same data.
+
+**Pythonic implementation:** Immutable `Event[T]` (frozen dataclass), append-only `EventStore[T]`, pure projection functions:
+
+```python
+@dataclass(frozen=True)
+class Event[T = str]:
+    type: EventType
+    data: T
+    timestamp: datetime = field(default_factory=datetime.now)
+
+class EventStore[T]:
+    def append(self, event: Event[T]) -> None: ...
+    def get_all_events(self) -> list[Event[T]]: ...
+```
+
+→ Full reference: `patterns/event-sourcing.md`
+
+### CQRS
+
+**Recognize:** List endpoints compute derived fields on every read; read and write patterns differ significantly.
+
+**Pythonic implementation:** Separate write model (source of truth) and read model (pre-computed projection). Commands modify; queries fetch:
+
+```python
+COMMANDS_COLL = "ticket_commands"   # write side
+READS_COLL = "ticket_reads"        # read projection
+
+async def project_ticket(db, ticket_id: str) -> None:
+    doc = await db[COMMANDS_COLL].find_one({"_id": ticket_id})
+    read_doc = {"preview": make_preview(doc["message"]), "has_note": bool(doc.get("agent_note"))}
+    await db[READS_COLL].update_one({"_id": ticket_id}, {"$set": read_doc}, upsert=True)
+```
+
+→ Full reference: `patterns/cqrs.md`
+
+### Builder
+
+**Recognize:** Complex object construction with many optional parts; construction steps matter.
+
+**Pythonic implementation:** Fluent API with `Self` return type; `.build()` returns frozen product:
+
+```python
+class HTMLBuilder:
+    def set_title(self, title: str) -> Self:
+        self._title = title
+        return self
+
+    def build(self) -> HTMLPage:
+        return HTMLPage(self._title, self._metadata, self._body)
+
+page = HTMLBuilder().set_title("Demo").add_header("Hello").build()
+```
+
+→ Full reference: `patterns/builder.md`
+
+### Unit of Work
+
+**Recognize:** Multiple database operations that must succeed or fail together.
+
+**Pythonic implementation:** Context manager wrapping a transaction:
+
+```python
+class UnitOfWork:
+    def __enter__(self) -> "UnitOfWork":
+        self.connection = sqlite3.connect(self.db_name)
+        self.connection.execute("BEGIN")
+        self.repository = Repository(self.connection)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if exc_val:
+            self.connection.rollback()
+        else:
+            self.connection.commit()
+        self.connection.close()
+```
+
+→ Full reference: `patterns/unit-of-work.md`
+
+### Singleton
+
+**Recognize:** Need exactly one instance of a resource (config, connection pool, model loader).
+
+**Preferred approach:** Dependency injection — pass the resource as an explicit parameter, create it in the composition root (`main()` or router layer). When DI creates excessive parameter-passing overhead, a module-level instance is an acceptable fallback:
+
+```python
+# PREFERRED: dependency injection
+def process_order(order: Order, config: Config) -> None: ...
+
+# FALLBACK: module-level instance (still global state)
+# config.py
+db_uri = "sqlite:///:memory:"
+debug = True
+```
+
+Class-based Singleton (metaclass, `__new__`) is an anti-pattern in Python — avoid it.
+
+→ Full reference: `patterns/singleton.md`
+
+### State
+
+**Recognize:** Object behaves differently depending on its internal state; growing if/elif chains checking state before every action.
+
+**Pythonic implementation:** Protocol-based state objects. The context delegates actions to the current state, and state objects trigger transitions:
+
+```python
+class DocumentState(Protocol):
+    def edit(self, doc: "DocumentContext") -> None: ...
+    def review(self, doc: "DocumentContext") -> None: ...
+    def finalize(self, doc: "DocumentContext") -> None: ...
+
+class DraftState:
+    def edit(self, doc: "DocumentContext") -> None:
+        doc.content.append("New content.")
+    def review(self, doc: "DocumentContext") -> None:
+        doc.state = ReviewedState()
+    def finalize(self, doc: "DocumentContext") -> None:
+        print("Cannot finalize — review first.")
+
+class DocumentContext:
+    def __init__(self) -> None:
+        self.state: DocumentState = DraftState()
+    def edit(self) -> None:
+        self.state.edit(self)
+```
+
+→ Full reference: `patterns/state.md`
+
+### Adapter
+
+**Recognize:** External library's interface doesn't match what your code expects.
+
+**Pythonic implementation (preferred):** Function + `functools.partial` for single-method adaptation. Protocol + composition class for multi-method adaptation:
+
+```python
+from typing import Any, Callable
+from functools import partial
+
+ConfigGetter = Callable[[str], Any]
+
+def get_from_bs(soup: BeautifulSoup, key: str, default: Any = None) -> Any | None:
+    value = soup.find(key)
+    return value.get_text() if value else default
+
+# Bind the external dependency — result matches ConfigGetter signature
+bs_adapter = partial(get_from_bs, soup)
+experiment = Experiment(bs_adapter)
+```
+
+Never use class-based (inheritance) adapters — they override the adaptee's methods with different semantics.
+
+→ Full reference: `patterns/adapter.md`
+
+### Facade
+
+**Recognize:** Application code is coupled to a complex subsystem's internal details (connections, protocols, device management).
+
+**Pythonic implementation:** A class that exposes a small number of high-level methods hiding subsystem complexity. Use `functools.partial` to bind the facade to controller functions:
+
+```python
+class IoTFacade:
+    def __init__(self, service: IoTService) -> None:
+        self.service = service
+        self.speaker = SmartSpeaker(id="speaker_1")
+        self.service.register_device(self.speaker)
+
+    def power_speaker(self, on: bool) -> None:
+        device = self.service.get_device(self.speaker.id)
+        connection = Connection(device.ip, device.port)
+        msg = Message(sender=self.speaker.id, content="switch_on" if on else "switch_off")
+        connection.send(msg.to_b64())
+
+# Composition root: bind facade to controller, pass to GUI
+power_fn = partial(power_speaker, facade)  # Callable[[bool], None]
+```
+
+→ Full reference: `patterns/facade.md`
+
+### Repository
+
+**Recognize:** Data access logic (SQL queries, file I/O) is mixed into domain classes. Changing storage requires modifying business logic.
+
+**Pythonic implementation:** Protocol interface for CRUD operations, concrete implementations per storage backend, in-memory stub for testing. The three-layer architecture's `DataInterface` + `DBInterface` is this pattern:
+
+```python
+class PostRepository(Protocol):
+    def get(self, post_id: str) -> Post: ...
+    def get_all(self) -> list[Post]: ...
+    def add(self, post: Post) -> None: ...
+    def update(self, post: Post) -> None: ...
+    def delete(self, post_id: str) -> None: ...
+```
+
+→ Full reference: `patterns/repository.md`
+
+### Fluent Interface
+
+**Recognize:** Sequential operations on an object are verbose and hard to read. Steps and configuration lists must be kept in sync manually.
+
+**Pythonic implementation:** Methods return `self` to enable chaining. Add domain-specific verbs for readability:
+
+```python
+animation = (
+    Animation()
+    .rotate(60)
+    .move(200, 0)
+    .scale(1.3, duration=0.5)
+    .fade_to(0.0)
+)
+```
+
+Use `Self` (Python 3.11+) for subclass-safe return types. Not the same as Builder — intent is readability, not controlled construction.
+
+→ Full reference: `patterns/fluent-interface.md`
+
+### Retry
+
+**Recognize:** External API/database calls fail intermittently due to transient errors (timeouts, rate limits, temporary unavailability).
+
+**Pythonic implementation:** `@retry` decorator with exponential backoff using `functools.wraps`. Catches `Exception` broadly — the re-raise after exhaustion is the safety mechanism:
+
+```python
+import functools
+import time
+
+def retry(retries: int = 3, delay: float = 1.0, backoff: float = 2.0):
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            for attempt in range(1, retries + 1):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception:
+                    if attempt == retries:
+                        raise
+                    time.sleep(delay * (backoff ** (attempt - 1)))
+            raise RuntimeError("All retries failed")
+        return wrapper
+    return decorator
+
+@retry(retries=5, delay=0.5)
+def fetch_price(symbol: str) -> float:
+    return requests.get(f"https://api.example.com/price/{symbol}").json()["price"]
+```
+
+→ Full reference: `patterns/retry.md`
+
+### Lazy Loading
+
+**Recognize:** Application startup is slow because it loads all data/models/resources upfront, even if many are never used.
+
+**Pythonic implementation:** `functools.cache` for computed-once values, TTL cache for time-limited data, generators for streaming:
+
+```python
+from functools import cache
+
+@cache
+def load_model(name: str) -> Model:
+    return Model.from_pretrained(name)  # loaded once, cached forever
+```
+
+→ Full reference: `patterns/lazy-loading.md`
+
+### Plugin Architecture
+
+**Recognize:** Adding new features requires modifying imports and core code. Need post-deployment extensibility.
+
+**Pythonic implementation:** Registry + `importlib.import_module` + self-registering modules:
+
+```python
+# plugins/bard.py — self-registers when imported
+from game.factory import register
+
+@dataclass
+class Bard:
+    name: str
+    def make_noise(self) -> None:
+        print(f"{self.name} plays the flute")
+
+class PluginInterface:
+    @staticmethod
+    def initialize() -> None:
+        register("bard", Bard)
+```
+
+→ Full reference: `patterns/plugin-architecture.md`

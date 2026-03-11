@@ -1,10 +1,18 @@
+"""Booking business logic — price computation, CRUD orchestration.
+
+Intentional upgrades from transcript:
+  - Returns Pydantic Booking models (transcript returned raw DataObject dicts)
+  - Uses model_dump() (Pydantic v2) instead of dataclass .dict()
+  - "nights" variable name (transcript used "days")
+  - data_interface parameter name (transcript used "booking_interface")
+  - UUID generation for IDs (transcript relied on DB autoincrement)
+  - InvalidDateError validation not included — add if date validation is needed
+"""
+
 import uuid
-from typing import Any
 
 from models.booking import Booking, BookingCreate
-from models.room import DataInterface
-
-DataObject = dict[str, Any]
+from operations.interface import DataInterface
 
 
 def create_booking(
@@ -16,7 +24,7 @@ def create_booking(
     nights = (data.to_date - data.from_date).days
     price = nights * room["price"]
 
-    booking_data = data.dict()
+    booking_data = data.model_dump()
     booking_data["id"] = str(uuid.uuid4())
     booking_data["price"] = price
     created = data_interface.create(booking_data)

@@ -1,9 +1,16 @@
+"""Room business logic — CRUD operations.
+
+Intentional upgrades from transcript:
+  - Returns Pydantic Room models (transcript returned raw DataObject dicts)
+  - Full CRUD (transcript only showed read_all_rooms and read_room)
+  - create_room, update_room, delete_room added for completeness
+  - RoomUpdate with exclude_none=True enables partial updates
+"""
+
 import uuid
-from typing import Any
 
-from models.room import DataInterface, Room, RoomCreate, RoomUpdate
-
-DataObject = dict[str, Any]
+from models.room import Room, RoomCreate, RoomUpdate
+from operations.interface import DataInterface
 
 
 def read_all_rooms(data_interface: DataInterface) -> list[Room]:
@@ -17,7 +24,7 @@ def read_room(room_id: str, data_interface: DataInterface) -> Room:
 
 
 def create_room(data: RoomCreate, data_interface: DataInterface) -> Room:
-    room_data = data.dict()
+    room_data = data.model_dump()
     room_data["id"] = str(uuid.uuid4())
     created = data_interface.create(room_data)
     return Room(**created)
@@ -26,7 +33,7 @@ def create_room(data: RoomCreate, data_interface: DataInterface) -> Room:
 def update_room(
     room_id: str, data: RoomUpdate, data_interface: DataInterface
 ) -> Room:
-    update_data = data.dict(exclude_none=True)
+    update_data = data.model_dump(exclude_none=True)
     updated = data_interface.update(room_id, update_data)
     return Room(**updated)
 

@@ -150,18 +150,16 @@ class AlwaysEmptyStub(DataInterfaceStub):
 
 ### Custom Domain Exceptions
 
-Define domain-specific exceptions as dataclasses:
+Define domain-specific exception classes:
 
 ```python
-@dataclass
 class NotFoundError(Exception):
-    entity: str
-    id: str
+    """Raised when a requested entity does not exist."""
+    pass
 
-@dataclass
 class NotAuthorizedError(Exception):
-    entity: str
-    id: str
+    """Raised when access to a resource is denied."""
+    pass
 ```
 
 ### Operations Raise Domain Exceptions
@@ -171,7 +169,7 @@ def read_room(room_id: str, data_interface: DataInterface) -> Room:
     try:
         room = data_interface.read_by_id(room_id)
     except KeyError:
-        raise NotFoundError(entity="room", id=room_id)
+        raise NotFoundError(f"Room not found: {room_id}")
     return Room(**room)
 ```
 
@@ -272,9 +270,8 @@ Use `pytest.raises` to verify that the correct exception is raised with the corr
 ```python
 def test_read_nonexistent_room_raises_not_found():
     stub = DataInterfaceStub()
-    with pytest.raises(NotFoundError) as exc_info:
+    with pytest.raises(NotFoundError, match="nonexistent-id"):
         read_room("nonexistent-id", stub)
-    assert exc_info.value.entity_id == "nonexistent-id"
 
 
 def test_create_booking_invalid_room_raises_not_found():
@@ -346,3 +343,98 @@ When adding tests for a new entity:
 6. Test with multiple entities: ensure operations work with populated data
 7. Use test-specific stub subclasses for failure scenarios
 8. Use `pytest.mark.parametrize` for input/output variations
+
+---
+
+## Refactoring Toward Testability
+
+If you inherit code that is hard to test, follow these four steps to make it testable without rewriting everything:
+
+1. **Identify the dependency** — find the concrete class or global that makes the function hard to test (e.g., a database session created inside the function).
+2. **Extract the dependency** — move the creation of that dependency out of the function and accept it as a parameter.
+3. **Introduce an abstraction** — define a Protocol for the dependency so the function depends on an interface, not a concrete class.
+4. **Inject a stub in tests** — pass a `DataInterfaceStub` (or similar) instead of the real dependency.
+
+```python
+# STEP 1: Hard to test — creates its own DB session
+def get_room(room_id: str) -> Room:
+    session = SessionLocal()
+    room = session.get(DBRoom, room_id)
+    return Room(**to_dict(room))
+
+# STEP 2: Extract dependency as parameter
+def get_room(room_id: str, session: Session) -> Room:
+    room = session.get(DBRoom, room_id)
+    return Room(**to_dict(room))
+
+# STEP 3: Depend on abstraction (DataInterface Protocol)
+def get_room(room_id: str, data_interface: DataInterface) -> Room:
+    room = data_interface.read_by_id(room_id)
+    return Room(**room)
+
+# STEP 4: Test with stub — no database needed
+def test_get_room():
+    stub = DataInterfaceStub()
+    stub.data["room-1"] = {"id": "room-1", "number": "101", "size": 30, "price": 100}
+    room = get_room("room-1", stub)
+    assert room.number == "101"
+```
+
+---
+
+## Time-Dependent Test Fragility
+
+Tests that depend on the current time are fragile — they may pass at 2pm but fail at midnight. Inject time as a dependency:
+
+```python
+# BAD: depends on current time
+def is_check_in_today(booking: Booking) -> bool:
+    return booking.check_in_date == date.today()
+
+# GOOD: inject "now" as a parameter
+def is_check_in_today(booking: Booking, today: date) -> bool:
+    return booking.check_in_date == today
+
+# Test with fixed date — always deterministic
+def test_check_in_today():
+    booking = Booking(check_in_date=date(2024, 6, 15))
+    assert is_check_in_today(booking, today=date(2024, 6, 15))
+    assert not is_check_in_today(booking, today=date(2024, 6, 16))
+```
+
+---
+
+## Skipping and Expected Failures
+
+Use `pytest.mark.skip` and `pytest.mark.xfail` to handle tests that cannot run in all environments:
+
+```python
+import pytest
+
+@pytest.mark.skip(reason="Database migration not yet applied")
+def test_new_field_exists():
+    ...
+
+@pytest.mark.xfail(reason="Known bug in price rounding, fix in next sprint")
+def test_price_rounds_correctly():
+    ...
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix-only feature")
+def test_file_permissions():
+    ...
+```
+
+- **`skip`** — always skips, test is not run
+- **`xfail`** — test is expected to fail; if it passes, pytest reports it as `XPASS` (unexpected pass)
+- **`skipif`** — conditional skip based on runtime condition
+
+---
+
+## Beyond Unit Tests
+
+For advanced testing techniques beyond the stub-based approach covered here, see **`testing-advanced.md`**:
+
+- **Pytest organization** — `conftest.py` fixtures, CLI options, project structure conventions
+- **Property-based testing** with Hypothesis — test properties that hold for any valid input, not just specific examples; catches edge cases humans miss
+- **Model-based (stateful) testing** — generate random sequences of operations to find bugs in stateful systems (orders, workflows, state machines)
+- **Code coverage philosophy** — why 100% coverage misleads, focus on branch coverage and meaningful assertions over line coverage metrics
