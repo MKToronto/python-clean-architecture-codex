@@ -1,8 +1,8 @@
-# python-clean-architecture-codex
+# python-clean-architecture-codex — Codex CLI Skill
 
-A Codex CLI agent skill that provides Clean Architecture guidance for Python/FastAPI projects.
+A [Codex CLI](https://developers.openai.com/codex/cli/) agent skill that provides Clean Architecture guidance for Python/FastAPI projects. Scaffold, review, and refactor Python projects with design principles and Pythonic patterns — directly inside Codex CLI.
 
-This is the [Codex CLI](https://developers.openai.com/codex/cli/) version of [python-clean-architecture](https://github.com/MKToronto/python-clean-architecture) (originally built for Claude Code).
+This is the Codex CLI version of [python-clean-architecture](https://github.com/MKToronto/python-clean-architecture) (originally built for [Claude Code](https://docs.anthropic.com/en/docs/claude-code)).
 
 ## Attribution
 
